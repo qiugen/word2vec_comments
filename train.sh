@@ -1,0 +1,11 @@
+./bin/word2vec \
+    -train ./data/news.dat.basic \
+    -output ./model/news.model.basic.200v.bin \
+    -cbow 1 \
+    -size 200 \
+    -window 5 \
+    -negative 1 \
+    -hs 0 \
+    -sample 1e-3 \
+    -threads 10 \
+    -binary 1
