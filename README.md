@@ -1,4 +1,5 @@
 # word2vec with comments(in chinese)
+source code from Mikolov, at [Google](https://code.google.com/archive/p/word2vec/)
 
 1. add comments in word2vec.c, it may help you enjoy the source code;
 2. add several tools of word2vec:
