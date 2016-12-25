@@ -1,4 +1,5 @@
-# word2vec_comments
+# word2vec with comments(in chinese)
+
 1. add comments in word2vec.c, it may help you enjoy the source code;
 2. add several tools of word2vec:
  - distance_search.c can help you find the nearest neighbor of one word recursively.
