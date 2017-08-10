@@ -241,7 +241,7 @@ void CreateBinaryTree() {
   // 建树，每次只生成一颗节点
   for (a = 0; a < vocab_size - 1; a++) {
     // 从最后一个词开始，找到词频最小的两个节点{min1,min2}合成一棵树，其词频和和存在父节点节点
-    // 其中新生成的父节点也会参与min1, min2的选拔
+    // 其中新生成的父节点 由pos2指向，会参与min1, min2的对比选拔
     // 令parent_note中指向该父节点
     if (pos1 >= 0) {
       if (count[pos1] < count[pos2]) {
@@ -276,7 +276,7 @@ void CreateBinaryTree() {
   }
   // Now assign binary code to each vocabulary word
   // 从树的根节点位置到词的路径上的d_label赋值给词的code,记录在对应vocab[a].code
-  // 路径赋值给词的point数组。自顶向下的顺序,记录在对应vocab[a].point
+  // 路径从叶结点向根节点遍历赋值给词的point数组。再按自顶向下的顺序,记录在对应vocab[a].point数组
   for (a = 0; a < vocab_size; a++) {
     b = a;
     i = 0;
@@ -288,10 +288,10 @@ void CreateBinaryTree() {
       if (b == vocab_size * 2 - 2) break;
     }
     vocab[a].codelen = i;
-    vocab[a].point[0] = vocab_size - 2; //point[0]指向停止条件
+    vocab[a].point[0] = vocab_size - 2;              // point[0]指向停止条件
     for (b = 0; b < i; b++) {
-      vocab[a].code[i - b - 1] = code[b];//存储路径的编码例如0001
-      vocab[a].point[i - b] = point[b] - vocab_size;//指向从根节点往下到目标词的路径
+      vocab[a].code[i - b - 1] = code[b];            // 存储路径的编码例如0001
+      vocab[a].point[i - b] = point[b] - vocab_size; // 指向从根节点往下到目标词的路径
     }
   }
   free(count);
@@ -353,7 +353,7 @@ void SaveVocab() {
   fclose(fo);
 }
 
-//读取来自Vocab的词表
+//读取来自Vocab的词表，训练参数中词表给定的情况下会使用本函数
 void ReadVocab() {
   long long a, i = 0;
   char c;
@@ -395,12 +395,14 @@ void ReadVocab() {
 void InitNet() {
   long long a, b;
   unsigned long long next_random = 1;
-  //syn0分配一段对齐的内存. 大小为|词表*词向量维度|的浮点型内存
+  // syn0分配一段对齐的内存. 大小为|词表*词向量维度|的浮点型内存
+  // syn0为词向量参数矩阵
   a = posix_memalign((void **)&syn0, 128, (long long)vocab_size * layer1_size * sizeof(real)); // real为float
   if (syn0 == NULL) {printf("Memory allocation failed\n"); exit(1);}
   //如果是hierarchical softmax
   if (hs) {
     // syn1分配一段对齐的内存. 大小为|词表*词向量维度|的浮点型内存
+    // syn1为weight矩阵
     a = posix_memalign((void **)&syn1, 128, (long long)vocab_size * layer1_size * sizeof(real));
     if (syn1 == NULL) {printf("Memory allocation failed\n"); exit(1);}
     //初始化syn1
@@ -441,6 +443,7 @@ void *TrainModelThread(void *id) {
   //每个线程负责一部分语料的计算
   fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);
   while (1) {
+      // 每增加10000字，alpha按词频衰减一次，直到starting_alpha * 0.0001
     if (word_count - last_word_count > 10000) {
       word_count_actual += word_count - last_word_count;
       last_word_count = word_count;
@@ -455,9 +458,9 @@ void *TrainModelThread(void *id) {
       if (alpha < starting_alpha * 0.0001) alpha = starting_alpha * 0.0001;
     }
     if (sentence_length == 0) {
-      //每次读入1k个字, '\n' -> '</s>'
+      // 最大读入1k个字, 换行会'\n'替换为'</s>'符号。
       while (1) {
-        //读入，word为词在vocab中下标
+        // 读入，word为词在vocab中下标
         word = ReadWordIndex(fi);
         if (feof(fi)) break;
         if (word == -1) continue;
@@ -470,14 +473,15 @@ void *TrainModelThread(void *id) {
           next_random = next_random * (unsigned long long)25214903917 + 11;
           if (ran < (next_random & 0xFFFF) / (real)65536) continue;
         }
-        //将保留下的词组合成为句子
+        // 将未被跳过的词组合成为句子
         sen[sentence_length] = word;
         sentence_length++;
         if (sentence_length >= MAX_SENTENCE_LENGTH) break;
       }
       sentence_position = 0;
     }
-    //读完线程所属于数据区,重新开始新的一轮迭代
+    // 读完线程所属于数据区(未严格按文件区域大小，以平均分配词数的简单策略进行数据区大小控制)
+    // 重新开始新的一轮迭代
     if (feof(fi) || (word_count > train_words / num_threads)) {
       word_count_actual += word_count - last_word_count;
       local_iter--;
@@ -491,15 +495,18 @@ void *TrainModelThread(void *id) {
 
     word = sen[sentence_position];
     if (word == -1) continue;
+    // 上下文累加和neu1
     for (c = 0; c < layer1_size; c++) neu1[c] = 0;
+    // 权重的更新量
     for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
     next_random = next_random * (unsigned long long)25214903917 + 11;
-    //取窗口内的词
+    // 随机取窗口window(=5)内的数b
+    // 相当于在sentence_position的左右邻域[-(windows - b), windows - b]中取值
     b = next_random % window;
-    if (cbow) {  //train the cbow architecture
+    if (cbow) {  // train the cbow architecture
       // in -> hidden
       cw = 0;
-      //窗口内再进行随机取上一个子窗口b
+      // 再进行子窗口b取词
       for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
         c = sentence_position - window + a;
         if (c < 0) continue;
@@ -524,9 +531,9 @@ void *TrainModelThread(void *id) {
           else f = expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))];
           // 计算梯度。g 为梯度，alpha为学习率, f为logistic function输出的预测值
           g = (1 - vocab[word].code[d] - f) * alpha;
-          // 计算词向量的更新量：累积中间节点的参数和梯度
+          // 累积中间节点的参数和梯度, 计算词向量的更新量：delta = delta + g * w(cur)
           for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1[c + l2];
-          // 更新中间节点的参数
+          // 更新中间节点的参数: w(cur) = w(cur) + g * v(mid)
           for (c = 0; c < layer1_size; c++) syn1[c + l2] += g * neu1[c];
         }
         //目标函数为NEGATIVE SAMPLING,负采样无树结构
@@ -552,7 +559,7 @@ void *TrainModelThread(void *id) {
           else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;
           //计算词向量的更新量：累积各样本参数和梯度 
           for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1neg[c + l2];
-          //更新隐层节点的参数 
+          //更新负采样中采样点的weight参数 
           for (c = 0; c < layer1_size; c++) syn1neg[c + l2] += g * neu1[c];
         }
         //梯度由隐层更新到输入层,对每一个上下文更新梯度
@@ -589,7 +596,7 @@ void *TrainModelThread(void *id) {
           g = (1 - vocab[word].code[d] - f) * alpha;
           // 计算词向量的更新量：累积中间节点的参数和梯度
           for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1[c + l2];
-          // 更新中间节点的参数
+          // 更新中间节点的weight参数
           for (c = 0; c < layer1_size; c++) syn1[c + l2] += g * syn0[c + l1];
         }
         //目标函数为NEGATIVE SAMPLING,负采样无树结构
@@ -615,10 +622,11 @@ void *TrainModelThread(void *id) {
           else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;
           //计算词向量的更新量：累积各样本参数和梯度 
           for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1neg[c + l2];
-          //更新隐层节点的参数 
+          //更新对应节点的weight参数 
           for (c = 0; c < layer1_size; c++) syn1neg[c + l2] += g * syn0[c + l1];
         }
         // Learn weights input -> hidden
+        /// 更新词向量
         for (c = 0; c < layer1_size; c++) syn0[c + l1] += neu1e[c];
       }
     }
